@@ -13,8 +13,8 @@ parser_regex = re.compile(r"parse_(\w+)_(\d+)")
 class Rabbit:
     EXCHANGE = ""
 
-    def __init__(self, config):
-        self.uri = config["rabbit_uri"]
+    def __init__(self, uri):
+        self.uri = uri
         self.connection = None
         self.channel = None
         self.exchange = None
