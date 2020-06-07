@@ -6,12 +6,14 @@ import re
 import struct
 import traceback
 import sys
+from functools import wraps
 
 parser_regex = re.compile(r"parse_(\w+)_(\d+)")
 
 
 class Rabbit:
     EXCHANGE = ""
+    senders = set()
 
     def __init__(self, uri):
         self.uri = uri
@@ -21,6 +23,22 @@ class Rabbit:
 
         self.queues = {}
         self.parsers = self.init_parsers()
+
+    @classmethod
+    def sender(cls, queue_name, version):
+        packed_version = struct.pack("!B", version)
+
+        def outer(func):
+            @wraps(func)
+            async def inner(self, *args, **kwargs):
+                body = func(self, *args, **kwargs)
+                await self.exchange.publish(
+                    aio_pika.Message(packed_version + bytes(json.dumps(body), encoding="UTF8")),
+                    routing_key=queue_name
+                )
+            return inner
+        cls.senders.add(queue_name.upper())
+        return outer
 
     def init_parsers(self):
         parsers = {}
@@ -39,6 +57,7 @@ class Rabbit:
 
     async def create_queues(self):
         queues = {parser.upper() for parser, version in self.parsers.keys()}
+        queues.update(self.senders)
         for queue in queues:
             self.queues[queue] = await self.channel.declare_queue(queue)
             await self.queues[queue].bind(self.exchange)
