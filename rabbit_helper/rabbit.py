@@ -63,19 +63,19 @@ class Rabbit:
             await self.queues[queue].bind(self.exchange)
 
     async def consume(self):
-        async def consume_queue(name, queue):
-            async with queue.iterator() as queue_iter:
-                async for message in queue_iter:
-                    async with message.process():
-                        body = message.body[1:]
-                        version, = struct.unpack_from("!B", message.body)
-                        loaded = json.loads(body)
-                        parser = self.parsers.get((name, version))
-                        if parser:
-                            try:
-                                await parser(loaded)
-                            except:
-                                tb = traceback.format_exc()
-                                sys.stderr.write(tb)
+        await asyncio.gather(*[self.consume_queue(name.lower(), queue) for name, queue in self.queues.items()])
 
-        await asyncio.gather(*[consume_queue(name.lower(), queue) for name, queue in self.queues.items()])
+    async def consume_queue(self, name, queue, parser_caller=lambda parser, loaded: parser(loaded)):
+        async with queue.iterator() as queue_iter:
+            async for message in queue_iter:
+                async with message.process():
+                    body = message.body[1:]
+                    version, = struct.unpack_from("!B", message.body)
+                    loaded = json.loads(body)
+                    parser = self.parsers.get((name, version))
+                    if parser:
+                        try:
+                            await parser_caller(parser, loaded)
+                        except:
+                            tb = traceback.format_exc()
+                            sys.stderr.write(tb)
