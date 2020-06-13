@@ -57,10 +57,12 @@ class Rabbit:
 
     async def create_queues(self):
         queues = {parser.upper() for parser, version in self.parsers.keys()}
-        queues.update(self.senders)
         for queue in queues:
             self.queues[queue] = await self.channel.declare_queue(queue)
             await self.queues[queue].bind(self.exchange)
+        for queue in self.senders:
+            created_queue = await self.channel.declare_queue(queue)
+            await created_queue.bind(self.exchange)
 
     async def consume(self):
         await asyncio.gather(*[self.consume_queue(name.lower(), queue) for name, queue in self.queues.items()])
