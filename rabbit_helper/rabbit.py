@@ -12,14 +12,13 @@ parser_regex = re.compile(r"parse_(\w+)_(\d+)")
 
 
 class Rabbit:
-    EXCHANGE = ""
     senders = set()
 
     def __init__(self, uri):
         self.uri = uri
         self.connection = None
         self.channel = None
-        self.exchange = None
+        self.exchanges = {}
 
         self.queues = {}
         self.parsers = self.init_parsers()
@@ -32,7 +31,7 @@ class Rabbit:
             @wraps(func)
             async def inner(self, *args, **kwargs):
                 body = func(self, *args, **kwargs)
-                await self.exchange.publish(
+                await self.exchanges[queue_name].publish(
                     aio_pika.Message(packed_version + bytes(json.dumps(body), encoding="UTF8")),
                     routing_key=queue_name
                 )
@@ -52,17 +51,15 @@ class Rabbit:
     async def connect(self):
         self.connection = await aio_pika.connect_robust(self.uri)
         self.channel = await self.connection.channel()
-        self.exchange = await self.channel.declare_exchange(self.EXCHANGE)
+        queues = self.senders | {parser.upper() for parser, version in self.parsers.keys()}
+        self.exchanges = {queue: await self.channel.declare_exchange(queue, type=aio_pika.ExchangeType.FANOUT) for queue in queues}
         await self.create_queues()
 
     async def create_queues(self):
         queues = {parser.upper() for parser, version in self.parsers.keys()}
         for queue in queues:
-            self.queues[queue] = await self.channel.declare_queue(queue)
-            await self.queues[queue].bind(self.exchange)
-        for queue in self.senders:
-            created_queue = await self.channel.declare_queue(queue)
-            await created_queue.bind(self.exchange)
+            self.queues[queue] = created_queue = await self.channel.declare_queue(f"{queue}_{self.__class__.__name__}")
+            await created_queue.bind(self.exchanges[queue])
 
     async def consume(self):
         await asyncio.gather(*[self.consume_queue(name.lower(), queue) for name, queue in self.queues.items()])
