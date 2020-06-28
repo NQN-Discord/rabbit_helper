@@ -7,6 +7,11 @@ import struct
 import traceback
 import sys
 from functools import wraps
+try:
+    from sentry_sdk import capture_exception
+except ImportError:
+    def capture_exception(exception):
+        pass
 
 parser_regex = re.compile(r"parse_(\w+)_(\d+)")
 
@@ -75,6 +80,7 @@ class Rabbit:
                     if parser:
                         try:
                             await parser_caller(parser, loaded)
-                        except:
+                        except Exception as e:
                             tb = traceback.format_exc()
                             sys.stderr.write(tb)
+                            capture_exception(e)
