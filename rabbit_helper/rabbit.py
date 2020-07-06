@@ -44,6 +44,13 @@ class Rabbit:
         cls.senders.add(queue_name.upper())
         return outer
 
+    @classmethod
+    def receiver(cls, auto_delete: bool = False):
+        def outer(func):
+            func.auto_delete = auto_delete
+            return func
+        return outer
+
     def init_parsers(self):
         parsers = {}
         for attr, func in inspect.getmembers(self):
@@ -61,9 +68,13 @@ class Rabbit:
         await self.create_queues()
 
     async def create_queues(self):
-        queues = {parser.upper() for parser, version in self.parsers.keys()}
-        for queue in queues:
-            self.queues[queue] = created_queue = await self.channel.declare_queue(f"{queue}_{self.__class__.__name__}")
+        queues = {parser.upper(): func for (parser, version), func in self.parsers.items()}
+        for queue, func in queues.items():
+            auto_delete = getattr(func, "auto_delete", False)
+            self.queues[queue] = created_queue = await self.channel.declare_queue(
+                f"{queue}_{self.__class__.__name__}",
+                auto_delete=auto_delete
+            )
             await created_queue.bind(self.exchanges[queue])
 
     async def consume(self):
