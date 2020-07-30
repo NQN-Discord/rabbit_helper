@@ -7,6 +7,7 @@ import struct
 import traceback
 import sys
 from functools import wraps
+from typing import Dict
 try:
     from sentry_sdk import capture_exception
 except ImportError:
@@ -60,22 +61,29 @@ class Rabbit:
                 parsers[(name, int(version))] = func
         return parsers
 
-    async def connect(self):
+    async def connect(self) -> Dict[str, int]:
         self.connection = await aio_pika.connect_robust(self.uri)
         self.channel = await self.connection.channel()
         queues = self.senders | {parser.upper() for parser, version in self.parsers.keys()}
         self.exchanges = {queue: await self.channel.declare_exchange(queue, type=aio_pika.ExchangeType.FANOUT) for queue in queues}
-        await self.create_queues()
+        return await self.create_queues()
 
-    async def create_queues(self):
+    async def create_queues(self, passive: bool = False) -> Dict[str, int]:
         queues = {parser.upper(): func for (parser, version), func in self.parsers.items()}
+        queue_sizes = {}
         for queue, func in queues.items():
             auto_delete = getattr(func, "auto_delete", False)
             self.queues[queue] = created_queue = await self.channel.declare_queue(
                 f"{queue}_{self.__class__.__name__}",
-                auto_delete=auto_delete
+                auto_delete=auto_delete,
+                passive=passive
             )
             await created_queue.bind(self.exchanges[queue])
+            queue_sizes[queue] = created_queue.declaration_result.message_count
+        return queue_sizes
+
+    async def fetch_queue_sizes(self) -> Dict[str, int]:
+        return await self.create_queues(passive=True)
 
     async def consume(self):
         await asyncio.gather(*[self.consume_queue(name.lower(), queue) for name, queue in self.queues.items()])
