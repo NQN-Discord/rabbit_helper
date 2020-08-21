@@ -46,9 +46,12 @@ class Rabbit:
         return outer
 
     @classmethod
-    def receiver(cls, auto_delete: bool = False):
+    def receiver(cls, auto_delete: bool = False, **kwargs):
         def outer(func):
-            func.auto_delete = auto_delete
+            func.kwargs = {
+                "auto_delete": auto_delete,
+                "arguments": {k.replace("_", "-"): v for k, v in kwargs.items()}
+            }
             return func
         return outer
 
@@ -72,11 +75,11 @@ class Rabbit:
         queues = {parser.upper(): func for (parser, version), func in self.parsers.items()}
         queue_sizes = {}
         for queue, func in queues.items():
-            auto_delete = getattr(func, "auto_delete", False)
+            kwargs = getattr(func, "kwargs", {})
             self.queues[queue] = created_queue = await self.channel.declare_queue(
                 f"{queue}_{self.__class__.__name__}",
-                auto_delete=auto_delete,
-                passive=passive
+                passive=passive,
+                **kwargs
             )
             await created_queue.bind(self.exchanges[queue])
             queue_sizes[queue] = created_queue.declaration_result.message_count
