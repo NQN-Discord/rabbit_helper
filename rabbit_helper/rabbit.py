@@ -20,11 +20,12 @@ parser_regex = re.compile(r"parse_(\w+)_(\d+)")
 class Rabbit:
     senders = set()
 
-    def __init__(self, uri):
+    def __init__(self, uri, connection_id: str = ""):
         self.uri = uri
         self.connection = None
         self.channel = None
         self.exchanges = {}
+        self.connection_id = f"_{connection_id}" if connection_id else ""
 
         self.queues = {}
         self.parsers = self.init_parsers()
@@ -77,7 +78,7 @@ class Rabbit:
         for queue, func in queues.items():
             kwargs = getattr(func, "kwargs", {})
             self.queues[queue] = created_queue = await self.channel.declare_queue(
-                f"{queue}_{self.__class__.__name__}",
+                f"{queue}_{self.__class__.__name__}{self.connection_id}",
                 passive=passive,
                 **kwargs
             )
