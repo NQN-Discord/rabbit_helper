@@ -8,6 +8,7 @@ import traceback
 import sys
 from functools import wraps
 from typing import Dict
+from logging import getLogger
 try:
     from sentry_sdk import capture_exception
 except ImportError:
@@ -15,6 +16,7 @@ except ImportError:
         pass
 
 parser_regex = re.compile(r"parse_(\w+)_(\d+)")
+log = getLogger(__name__)
 
 
 class Rabbit:
@@ -47,10 +49,11 @@ class Rabbit:
         return outer
 
     @classmethod
-    def receiver(cls, auto_delete: bool = False, **kwargs):
+    def receiver(cls, auto_delete: bool = False, auto_shard: bool = False, **kwargs):
         def outer(func):
             func.kwargs = {
                 "auto_delete": auto_delete,
+                "auto_shard": auto_shard,
                 "arguments": {k.replace("_", "-"): v for k, v in kwargs.items()}
             }
             return func
@@ -65,11 +68,27 @@ class Rabbit:
                 parsers[(name, int(version))] = func
         return parsers
 
-    async def connect(self) -> Dict[str, int]:
+    async def connect(self):
         self.connection = await aio_pika.connect_robust(self.uri)
         self.channel = await self.connection.channel()
-        queues = self.senders | {parser.upper() for parser, version in self.parsers.keys()}
-        self.exchanges = {queue: await self.channel.declare_exchange(queue, type=aio_pika.ExchangeType.FANOUT) for queue in queues}
+        fanout_queues = self.senders | {parser.upper() for parser, version in self.parsers.keys()}
+        shard_queues = {
+            parser.upper()
+            for (parser, version), func in self.parsers.items()
+            if getattr(func, "kwargs", {}).get("auto_shard", False)
+        }
+
+        self.exchanges = {}
+        for queue in fanout_queues:
+            self.exchanges[queue] = await self.channel.declare_exchange(queue, type=aio_pika.ExchangeType.FANOUT)
+        for queue in shard_queues:
+            dest = f"{queue}-AUTOSHARDED-{self.__class__.__name__}"
+            self.exchanges[f"{queue}-SHARD"] = exchange = await self.channel.declare_exchange(dest, type=aio_pika.ExchangeType.X_CONSISTENT_HASH)
+            await self.channel.channel.exchange_bind(
+                destination=dest,
+                source=queue,
+            )
+
         return await self.create_queues()
 
     async def create_queues(self, passive: bool = False) -> Dict[str, int]:
@@ -77,13 +96,17 @@ class Rabbit:
         queue_sizes = {}
         for queue, func in queues.items():
             kwargs = getattr(func, "kwargs", {})
+            auto_shard = kwargs.pop("auto_shard", False)
             self.queues[queue] = created_queue = await self.channel.declare_queue(
                 f"{queue}_{self.__class__.__name__}{self.connection_id}",
                 passive=passive,
                 **kwargs
             )
-            await created_queue.bind(self.exchanges[queue])
             queue_sizes[queue] = created_queue.declaration_result.message_count
+            if auto_shard:
+                await created_queue.bind(self.exchanges[f"{queue}-SHARD"], routing_key="1")
+            else:
+                await created_queue.bind(self.exchanges[queue])
         return queue_sizes
 
     async def fetch_queue_sizes(self) -> Dict[str, int]:
