@@ -33,17 +33,26 @@ class Rabbit:
         self.parsers = self.init_parsers()
 
     @classmethod
-    def sender(cls, queue_name, version):
+    def sender(cls, queue_name, version, *, routing_key: str = None):
         packed_version = struct.pack("!B", version)
 
         def outer(func):
-            @wraps(func)
-            async def inner(self, *args, **kwargs):
-                body = func(self, *args, **kwargs)
-                await self.exchanges[queue_name].publish(
-                    aio_pika.Message(packed_version + bytes(json.dumps(body), encoding="UTF8")),
-                    routing_key=queue_name
-                )
+            if routing_key is not None:
+                @wraps(func)
+                async def inner(self, *args, **kwargs):
+                    body = func(self, *args, **kwargs)
+                    await self.exchanges[queue_name].publish(
+                        aio_pika.Message(packed_version + bytes(json.dumps(body), encoding="UTF8")),
+                        routing_key=body[routing_key]
+                    )
+            else:
+                @wraps(func)
+                async def inner(self, *args, **kwargs):
+                    body = func(self, *args, **kwargs)
+                    await self.exchanges[queue_name].publish(
+                        aio_pika.Message(packed_version + bytes(json.dumps(body), encoding="UTF8")),
+                        routing_key=""
+                    )
             return inner
         cls.senders.add(queue_name.upper())
         return outer
