@@ -1,1 +1,1 @@
-from .rabbit import Rabbit
+from .rabbit import Rabbit, parser_regex
