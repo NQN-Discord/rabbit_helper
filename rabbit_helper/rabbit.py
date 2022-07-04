@@ -9,6 +9,9 @@ import sys
 from functools import wraps
 from typing import Dict
 from logging import getLogger
+
+from prometheus_client import Counter
+
 try:
     from sentry_sdk import capture_exception
 except ImportError:
@@ -17,6 +20,14 @@ except ImportError:
 
 parser_regex = re.compile(r"parse_(\w+)_(\d+)")
 log = getLogger(__name__)
+
+
+events = Counter(
+    "queue_events",
+    "Events",
+    labelnames=["queue"],
+    namespace="rabbit",
+)
 
 
 class Rabbit:
@@ -125,9 +136,11 @@ class Rabbit:
         await asyncio.gather(*[self.consume_queue(name.lower(), queue) for name, queue in self.queues.items()])
 
     async def consume_queue(self, name, queue, parser_caller=lambda parser, loaded: parser(loaded)):
+        queue_metric_inc = events.labels(queue=name).inc
         async with queue.iterator() as queue_iter:
             async for message in queue_iter:
                 async with message.process():
+                    queue_metric_inc()
                     body = message.body[1:]
                     version, = struct.unpack_from("!B", message.body)
                     loaded = json.loads(body)
