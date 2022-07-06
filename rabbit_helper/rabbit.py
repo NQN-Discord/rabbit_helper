@@ -141,14 +141,17 @@ class Rabbit:
             async for message in queue_iter:
                 async with message.process():
                     queue_metric_inc()
-                    body = message.body[1:]
-                    version, = struct.unpack_from("!B", message.body)
-                    loaded = json.loads(body)
-                    parser = self.parsers.get((name, version))
-                    if parser:
-                        try:
-                            await parser_caller(parser, loaded)
-                        except Exception as e:
-                            tb = traceback.format_exc()
-                            sys.stderr.write(tb)
-                            capture_exception(e)
+                    await self._process_message(message, name, parser_caller)
+
+    async def _process_message(self, message: aio_pika.IncomingMessage, queue_name: str, parser_caller):
+        body = message.body[1:]
+        version, = struct.unpack_from("!B", message.body)
+        loaded = json.loads(body)
+        parser = self.parsers.get((queue_name, version))
+        if parser:
+            try:
+                await parser_caller(parser, loaded)
+            except Exception as e:
+                tb = traceback.format_exc()
+                sys.stderr.write(tb)
+                capture_exception(e)
