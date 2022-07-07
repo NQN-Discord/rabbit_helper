@@ -13,6 +13,12 @@ from logging import getLogger
 from prometheus_client import Counter
 
 try:
+    import orjson
+    json_loads = orjson.loads
+except ImportError:
+    json_loads = json.loads
+
+try:
     from sentry_sdk import capture_exception
 except ImportError:
     def capture_exception(exception):
@@ -146,7 +152,7 @@ class Rabbit:
     async def _process_message(self, message: aio_pika.IncomingMessage, queue_name: str, parser_caller):
         body = message.body[1:]
         version, = struct.unpack_from("!B", message.body)
-        loaded = json.loads(body)
+        loaded = json_loads(body)
         parser = self.parsers.get((queue_name, version))
         if parser:
             try:
