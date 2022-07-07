@@ -14,8 +14,10 @@ from prometheus_client import Counter
 
 try:
     import orjson
+    json_dumps = orjson.dumps
     json_loads = orjson.loads
 except ImportError:
+    json_dumps = lambda body: bytes(json.dumps(body), encoding="UTF8")
     json_loads = json.loads
 
 try:
@@ -59,7 +61,7 @@ class Rabbit:
                 async def inner(self, *args, **kwargs):
                     body = func(self, *args, **kwargs)
                     await self.exchanges[queue_name].publish(
-                        aio_pika.Message(packed_version + bytes(json.dumps(body), encoding="UTF8")),
+                        aio_pika.Message(packed_version + json_dumps(body)),
                         routing_key=body[routing_key]
                     )
             else:
@@ -67,7 +69,7 @@ class Rabbit:
                 async def inner(self, *args, **kwargs):
                     body = func(self, *args, **kwargs)
                     await self.exchanges[queue_name].publish(
-                        aio_pika.Message(packed_version + bytes(json.dumps(body), encoding="UTF8")),
+                        aio_pika.Message(packed_version + json_dumps(body)),
                         routing_key=""
                     )
             return inner
