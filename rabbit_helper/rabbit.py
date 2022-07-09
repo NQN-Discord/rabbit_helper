@@ -63,7 +63,7 @@ class Rabbit:
                     body = json_dumps(func(self, *args, **kwargs))
                     await self.exchanges[queue_name].publish(
                         aio_pika.Message(packed_version + body),
-                        routing_key=body
+                        #routing_key=body
                     )
             elif routing_key is not None:
                 @wraps(func)
