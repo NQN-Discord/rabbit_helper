@@ -40,6 +40,7 @@ events = Counter(
 
 class Rabbit:
     senders = set()
+    BODY = "_BODY_"
 
     def __init__(self, uri, connection_id: str = ""):
         self.uri = uri
@@ -56,7 +57,15 @@ class Rabbit:
         packed_version = struct.pack("!B", version)
 
         def outer(func):
-            if routing_key is not None:
+            if routing_key == cls.BODY:
+                @wraps(func)
+                async def inner(self, *args, **kwargs):
+                    body = json_dumps(func(self, *args, **kwargs))
+                    await self.exchanges[queue_name].publish(
+                        aio_pika.Message(packed_version + body),
+                        routing_key=body
+                    )
+            elif routing_key is not None:
                 @wraps(func)
                 async def inner(self, *args, **kwargs):
                     body = func(self, *args, **kwargs)
