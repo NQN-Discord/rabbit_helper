@@ -60,10 +60,10 @@ class Rabbit:
             if routing_key == cls.BODY:
                 @wraps(func)
                 async def inner(self, *args, **kwargs):
-                    body = json_dumps(func(self, *args, **kwargs))
+                    body = func(self, *args, **kwargs)
                     await self.exchanges[queue_name].publish(
-                        aio_pika.Message(packed_version + body),
-                        #routing_key=body
+                        aio_pika.Message(packed_version + json_dumps(body)),
+                        routing_key=str(body)
                     )
             elif routing_key is not None:
                 @wraps(func)
