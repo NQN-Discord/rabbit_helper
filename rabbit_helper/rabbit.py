@@ -29,17 +29,32 @@ except ImportError:
 parser_regex = re.compile(r"parse_(\w+)_(\d+)")
 log = getLogger(__name__)
 
+if True:
+    events = Counter(
+        "queue_events",
+        "Events",
+        labelnames=["queue"],
+        namespace="rabbit",
+    )
 
-events = Counter(
-    "queue_events",
-    "Events",
-    labelnames=["queue"],
-    namespace="rabbit",
-)
+    queue_binds = Counter(
+        "queue_binds",
+        "Direct queues dynamically bound",
+        labelnames=["queue"],
+        namespace="rabbit",
+    )
+
+    queue_unbinds = Counter(
+        "queue_binds",
+        "Direct queues dynamically bound",
+        labelnames=["queue"],
+        namespace="rabbit",
+    )
 
 
 class Rabbit:
     senders = set()
+    _direct_senders = set()
     BODY = "_BODY_"
 
     def __init__(self, uri, connection_id: str = ""):
@@ -50,10 +65,10 @@ class Rabbit:
         self.connection_id = f"_{connection_id}" if connection_id else ""
 
         self.queues = {}
-        self.parsers = self.init_parsers()
+        self.parsers, self.reverse_parsers = self.init_parsers()
 
     @classmethod
-    def sender(cls, queue_name, version, *, routing_key: str = None):
+    def sender(cls, queue_name, version, *, routing_key: str = None, direct: bool = False):
         packed_version = struct.pack("!B", version)
 
         def outer(func):
@@ -83,14 +98,17 @@ class Rabbit:
                     )
             return inner
         cls.senders.add(queue_name.upper())
+        if direct:
+            cls._direct_senders.add(queue_name.upper())
         return outer
 
     @classmethod
-    def receiver(cls, auto_delete: bool = False, auto_shard: bool = False, **kwargs):
+    def receiver(cls, auto_delete: bool = False, auto_shard: bool = False, direct: bool = False, **kwargs):
         def outer(func):
             func.kwargs = {
                 "auto_delete": auto_delete,
                 "auto_shard": auto_shard,
+                "direct": direct,
                 "arguments": {k.replace("_", "-"): v for k, v in kwargs.items()}
             }
             return func
@@ -98,29 +116,37 @@ class Rabbit:
 
     def init_parsers(self):
         parsers = {}
+        reverse_parsers = {}
         for attr, func in inspect.getmembers(self):
             match = parser_regex.match(attr)
             if match is not None:
                 name, version = match.groups()
                 parsers[(name, int(version))] = func
-        return parsers
+                reverse_parsers[func] = name, int(version)
+        return parsers, reverse_parsers
 
     async def connect(self):
         self.connection = await aio_pika.connect_robust(self.uri)
         self.channel = await self.connection.channel()
-        fanout_queues = self.senders | {parser.upper() for parser, version in self.parsers.keys()}
-        shard_queues = {
+        all_queues = self.senders | {parser.upper() for parser, version in self.parsers.keys()}
+        shard_queues = (
             parser.upper()
             for (parser, version), func in self.parsers.items()
             if getattr(func, "kwargs", {}).get("auto_shard", False)
+        )
+        direct_queues = self._direct_senders | {
+            parser.upper()
+            for (parser, version), func in self.parsers.items()
+            if getattr(func, "kwargs", {}).get("direct", False)
         }
 
         self.exchanges = {}
-        for queue in fanout_queues:
-            self.exchanges[queue] = await self.channel.declare_exchange(queue, type=aio_pika.ExchangeType.FANOUT)
+        for queue in all_queues:
+            queue_type = aio_pika.ExchangeType.DIRECT if queue in direct_queues else aio_pika.ExchangeType.FANOUT
+            self.exchanges[queue] = await self.channel.declare_exchange(queue, type=queue_type)
         for queue in shard_queues:
             dest = f"{queue}-AUTOSHARDED-{self.__class__.__name__}"
-            self.exchanges[f"{queue}-SHARD"] = exchange = await self.channel.declare_exchange(dest, type=aio_pika.ExchangeType.X_CONSISTENT_HASH)
+            self.exchanges[f"{queue}-SHARD"] = await self.channel.declare_exchange(dest, type=aio_pika.ExchangeType.X_CONSISTENT_HASH)
             await self.channel.channel.exchange_bind(
                 destination=dest,
                 source=queue,
@@ -134,13 +160,17 @@ class Rabbit:
         for queue, func in queues.items():
             kwargs = getattr(func, "kwargs", {})
             auto_shard = kwargs.pop("auto_shard", False)
+            direct = kwargs.pop("direct", False)
             self.queues[queue] = created_queue = await self.channel.declare_queue(
                 f"{queue}_{self.__class__.__name__}{self.connection_id}",
                 passive=passive,
                 **kwargs
             )
             queue_sizes[queue] = created_queue.declaration_result.message_count
-            if auto_shard:
+            if direct:
+                # Direct queues have their bindings generated dynamically
+                pass
+            elif auto_shard:
                 await created_queue.bind(self.exchanges[f"{queue}-SHARD"], routing_key="1")
             else:
                 await created_queue.bind(self.exchanges[queue])
@@ -148,6 +178,16 @@ class Rabbit:
 
     async def fetch_queue_sizes(self) -> Dict[str, int]:
         return await self.create_queues(passive=True)
+
+    async def bind_direct_queue(self, func, routing_key: str):
+        queue_name: str = self.reverse_parsers[func][0].upper()
+        queue_binds.labels(queue=queue_name).inc()
+        await self.queues[queue_name].bind(self.exchanges[queue_name], routing_key=routing_key)
+
+    async def unbind_direct_queue(self, func, routing_key: str):
+        queue_name: str = self.reverse_parsers[func][0].upper()
+        queue_unbinds.labels(queue=queue_name).inc()
+        await self.queues[queue_name].unbind(self.exchanges[queue_name], routing_key=routing_key)
 
     async def consume(self):
         await asyncio.gather(*[self.consume_queue(name.lower(), queue) for name, queue in self.queues.items()])
