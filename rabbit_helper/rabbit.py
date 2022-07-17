@@ -45,8 +45,8 @@ if True:
     )
 
     queue_unbinds = Counter(
-        "queue_binds",
-        "Direct queues dynamically bound",
+        "queue_unbinds",
+        "Direct queues dynamically unbound",
         labelnames=["queue"],
         namespace="rabbit",
     )
