@@ -175,6 +175,20 @@ class Rabbit:
             else:
                 await created_queue.bind(self.exchanges[queue])
         return queue_sizes
+    
+    async def dynamic_create_queue(self, func):
+        match = parser_regex.match(func.__name__)
+        name, version = match.groups()
+        self.parsers[(name, int(version))] = func
+        self.reverse_parsers[func] = name, int(version)
+        queue = name.upper()
+        self.exchanges[queue] = await self.channel.declare_exchange(queue, type=aio_pika.ExchangeType.FANOUT)
+        created_queue = await self.channel.declare_queue(
+            f"{queue}_{self.__class__.__name__}{self.connection_id}",
+            passive=False
+        )
+        await created_queue.bind(self.exchanges[queue])
+        await self.consume_queue(name, created_queue)
 
     async def fetch_queue_sizes(self) -> Dict[str, int]:
         return await self.create_queues(passive=True)
